@@ -53,18 +53,11 @@ class Config:
             "api_hash": "",
             "phone": "",
             "session_name": "telegram_forwarder",
-            "proxy": {
-                "enabled": False,
-                "type": "socks5",
-                "addr": "127.0.0.1",
-                "port": 1080,
-                "username": "",
-                "password": "",
-                "use_system_proxy": False
-            },
             "auto_start": False,
             "rules": [],
-            "theme": "dark"  # 默认改为深色模式
+            "theme": "dark",  # 默认改为深色模式
+            "version": "2.2",
+            "author": "DomAurora"
         }
     
     @staticmethod
@@ -81,6 +74,7 @@ class TelegramWorker(QThread):
     error_signal = pyqtSignal(str)
     auth_code_signal = pyqtSignal()
     password_signal = pyqtSignal()
+    stopped_signal = pyqtSignal()  # 新增：停止完成信号
     
     def __init__(self, config: dict):
         super().__init__()
@@ -90,6 +84,7 @@ class TelegramWorker(QThread):
         self.auth_code = None
         self.password = None
         self.loop = None
+        self.should_stop = False  # 新增：控制停止的标志
         
     def run(self):
         """运行工作线程"""
@@ -99,78 +94,33 @@ class TelegramWorker(QThread):
         try:
             self.loop.run_until_complete(self.start_client())
         except Exception as e:
-            logger.exception("工作线程异常")
-            self.error_signal.emit(f"错误: {str(e)}")
+            if not self.should_stop:  # 如果不是主动停止导致的错误
+                logger.exception("工作线程异常")
+                self.error_signal.emit(f"错误: {str(e)}")
         finally:
-            if self.loop:
+            self.cleanup()
+    
+    def cleanup(self):
+        """清理资源"""
+        try:
+            if self.loop and not self.loop.is_closed():
                 self.loop.close()
+        except Exception as e:
+            logger.warning(f"清理事件循环时出错: {e}")
+        finally:
+            self.loop = None
+            self.client = None
+            self.is_running = False
+            self.stopped_signal.emit()  # 发出停止完成信号
     
     async def start_client(self):
         """启动客户端"""
         try:
-            # 配置代理
-            proxy = None
-            if self.config['proxy']['enabled']:
-                proxy_config = self.config['proxy']
-                
-                # 检查是否使用系统代理
-                if proxy_config.get('use_system_proxy', False):
-                    import os
-                    # 尝试从环境变量获取系统代理
-                    http_proxy = os.environ.get('http_proxy') or os.environ.get('HTTP_PROXY')
-                    https_proxy = os.environ.get('https_proxy') or os.environ.get('HTTPS_PROXY')
-                    
-                    if http_proxy or https_proxy:
-                        # 解析代理地址
-                        proxy_url = http_proxy or https_proxy
-                        if proxy_url.startswith('http://'):
-                            proxy_type = 'http'
-                            proxy_url = proxy_url[7:]
-                        elif proxy_url.startswith('https://'):
-                            proxy_type = 'http'
-                            proxy_url = proxy_url[8:]
-                        elif proxy_url.startswith('socks5://'):
-                            proxy_type = 'socks5'
-                            proxy_url = proxy_url[9:]
-                        elif proxy_url.startswith('socks4://'):
-                            proxy_type = 'socks4'
-                            proxy_url = proxy_url[9:]
-                        else:
-                            proxy_type = 'http'
-                        
-                        # 解析地址和端口
-                        if '@' in proxy_url:
-                            auth, addr_port = proxy_url.split('@')
-                            username, password = auth.split(':')
-                            addr, port = addr_port.split(':')
-                            proxy = {
-                                'proxy_type': proxy_type,
-                                'addr': addr,
-                                'port': int(port),
-                                'username': username,
-                                'password': password
-                            }
-                        else:
-                            addr, port = proxy_url.split(':')
-                            proxy = {
-                                'proxy_type': proxy_type,
-                                'addr': addr,
-                                'port': int(port)
-                            }
-                        
-                        self.log_signal.emit(f"✓ 使用系统代理: {proxy_type}://{addr}:{port}")
-                    else:
-                        self.log_signal.emit("⚠ 未找到系统代理设置，使用自定义代理")
-                        proxy = self._create_custom_proxy(proxy_config)
-                else:
-                    proxy = self._create_custom_proxy(proxy_config)
-            
-            # 创建客户端
+            # 创建客户端（无代理）
             self.client = TelegramClient(
                 self.config['session_name'],
                 self.config['api_id'],
-                self.config['api_hash'],
-                proxy=proxy
+                self.config['api_hash']
             )
             
             await self.client.connect()
@@ -190,26 +140,27 @@ class TelegramWorker(QThread):
             self.log_signal.emit("✓ 消息转发服务已启动")
             
             # 保持运行
-            await self.client.run_until_disconnected()
+            while not self.should_stop:
+                try:
+                    await asyncio.sleep(1)
+                except asyncio.CancelledError:
+                    break
             
         except Exception as e:
             logger.exception("启动客户端失败")
             self.error_signal.emit(f"启动失败: {str(e)}")
             self.status_signal.emit("已停止")
+        finally:
+            await self.disconnect_client()
     
-    def _create_custom_proxy(self, proxy_config):
-        """创建自定义代理配置"""
-        proxy = {
-            'proxy_type': proxy_config['type'],
-            'addr': proxy_config['addr'],
-            'port': proxy_config['port']
-        }
-        if proxy_config.get('username'):
-            proxy['username'] = proxy_config['username']
-            proxy['password'] = proxy_config.get('password', '')
-        
-        self.log_signal.emit(f"✓ 使用自定义代理: {proxy_config['type']}://{proxy_config['addr']}:{proxy_config['port']}")
-        return proxy
+    async def disconnect_client(self):
+        """断开客户端连接"""
+        if self.client and self.client.is_connected():
+            try:
+                await self.client.disconnect()
+                self.log_signal.emit("✓ 已断开 Telegram 连接")
+            except Exception as e:
+                logger.warning(f"断开连接时出错: {e}")
     
     async def authenticate(self):
         """处理认证流程"""
@@ -218,8 +169,11 @@ class TelegramWorker(QThread):
         
         # 请求验证码
         self.auth_code_signal.emit()
-        while self.auth_code is None:
+        while self.auth_code is None and not self.should_stop:
             await asyncio.sleep(0.1)
+        
+        if self.should_stop:
+            return
         
         try:
             await self.client.sign_in(self.config['phone'], self.auth_code)
@@ -228,8 +182,11 @@ class TelegramWorker(QThread):
             self.log_signal.emit("→ 需要两步验证密码")
             self.password_signal.emit()
             
-            while self.password is None:
+            while self.password is None and not self.should_stop:
                 await asyncio.sleep(0.1)
+            
+            if self.should_stop:
+                return
             
             await self.client.sign_in(password=self.password)
         
@@ -349,10 +306,11 @@ class TelegramWorker(QThread):
     
     def stop(self):
         """停止客户端"""
-        self.is_running = False
-        if self.client and self.loop:
+        self.should_stop = True
+        if self.client and self.client.is_connected():
+            # 在工作线程中执行断开连接
             asyncio.run_coroutine_threadsafe(
-                self.client.disconnect(),
+                self.disconnect_client(),
                 self.loop
             )
 
@@ -827,6 +785,7 @@ class MainWindow(QMainWindow):
         super().__init__()
         self.config = Config.load()
         self.worker: Optional[TelegramWorker] = None
+        self.is_service_running = False  # 新增：服务运行状态标志
         self.init_ui()
         self.apply_theme()
         
@@ -834,6 +793,12 @@ class MainWindow(QMainWindow):
         """初始化界面"""
         self.setWindowTitle("Telegram 消息转发器")
         self.setMinimumSize(1100, 800)
+        
+        # 设置程序图标
+        try:
+            self.setWindowIcon(QIcon('app.ico'))
+        except:
+            pass
         
         # 设置窗口标志
         self.setWindowFlags(Qt.Window | Qt.WindowMinimizeButtonHint | Qt.WindowMaximizeButtonHint | Qt.WindowCloseButtonHint)
@@ -975,13 +940,13 @@ class MainWindow(QMainWindow):
         )
         stats_layout.addWidget(active_card)
         
-        # 日志数量卡片
-        log_card = self.create_stat_card(
-            "📊 今日日志",
-            "0",
+        # 版本信息卡片
+        version_card = self.create_stat_card(
+            "📦 版本信息",
+            self.config.get('version', '2.2'),
             "#9b59b6"
         )
-        stats_layout.addWidget(log_card)
+        stats_layout.addWidget(version_card)
         
         layout.addLayout(stats_layout)
         layout.addStretch()
@@ -1156,53 +1121,22 @@ class MainWindow(QMainWindow):
         account_group.setLayout(account_layout)
         scroll_layout.addWidget(account_group)
         
-        # 代理设置
-        proxy_group = QGroupBox("🌐 代理设置")
-        proxy_group.setObjectName("proxyGroup")
-        proxy_layout = QFormLayout()
-        proxy_layout.setSpacing(15)
-        proxy_layout.setContentsMargins(25, 25, 25, 25)
-        proxy_layout.setLabelAlignment(Qt.AlignRight)
+        # 程序信息
+        info_group = QGroupBox("ℹ️ 程序信息")
+        info_group.setObjectName("infoGroup")
+        info_layout = QFormLayout()
+        info_layout.setSpacing(15)
+        info_layout.setContentsMargins(25, 25, 25, 25)
+        info_layout.setLabelAlignment(Qt.AlignRight)
         
-        self.proxy_enabled = QCheckBox("启用代理")
-        self.proxy_enabled.setChecked(self.config['proxy']['enabled'])
-        self.proxy_enabled.setObjectName("proxyEnabled")
-        proxy_layout.addRow("", self.proxy_enabled)
+        version_label = QLabel(self.config.get('version', '2.2'))
+        info_layout.addRow(QLabel("版本号:"), version_label)
         
-        self.system_proxy_check = QCheckBox("使用系统代理")
-        self.system_proxy_check.setChecked(self.config['proxy'].get('use_system_proxy', False))
-        self.system_proxy_check.setObjectName("systemProxyCheck")
-        proxy_layout.addRow("", self.system_proxy_check)
+        author_label = QLabel(self.config.get('author', 'DomAurora'))
+        info_layout.addRow(QLabel("作者:"), author_label)
         
-        self.proxy_type = QComboBox()
-        self.proxy_type.addItems(['socks5', 'socks4', 'http'])
-        self.proxy_type.setCurrentText(self.config['proxy']['type'])
-        self.proxy_type.setObjectName("proxyType")
-        proxy_layout.addRow(QLabel("代理类型:"), self.proxy_type)
-        
-        self.proxy_addr = QLineEdit(self.config['proxy']['addr'])
-        self.proxy_addr.setObjectName("proxyAddr")
-        proxy_layout.addRow(QLabel("代理地址:"), self.proxy_addr)
-        
-        self.proxy_port = QSpinBox()
-        self.proxy_port.setRange(1, 65535)
-        self.proxy_port.setValue(self.config['proxy']['port'])
-        self.proxy_port.setObjectName("proxyPort")
-        proxy_layout.addRow(QLabel("代理端口:"), self.proxy_port)
-        
-        self.proxy_username = QLineEdit(self.config['proxy'].get('username', ''))
-        self.proxy_username.setPlaceholderText("可选")
-        self.proxy_username.setObjectName("proxyUsername")
-        proxy_layout.addRow(QLabel("用户名:"), self.proxy_username)
-        
-        self.proxy_password = QLineEdit(self.config['proxy'].get('password', ''))
-        self.proxy_password.setPlaceholderText("可选")
-        self.proxy_password.setEchoMode(QLineEdit.Password)
-        self.proxy_password.setObjectName("proxyPassword")
-        proxy_layout.addRow(QLabel("密码:"), self.proxy_password)
-        
-        proxy_group.setLayout(proxy_layout)
-        scroll_layout.addWidget(proxy_group)
+        info_group.setLayout(info_layout)
+        scroll_layout.addWidget(info_group)
         
         scroll_layout.addStretch()
         
@@ -1217,29 +1151,6 @@ class MainWindow(QMainWindow):
         layout.addWidget(save_btn)
         
         self.tabs.addTab(tab, "⚙️ 设置")
-        
-        # 连接代理启用状态信号
-        self.proxy_enabled.stateChanged.connect(self.update_proxy_fields)
-        self.system_proxy_check.stateChanged.connect(self.update_proxy_fields)
-        self.update_proxy_fields()
-    
-    def update_proxy_fields(self):
-        """更新代理字段状态"""
-        enabled = self.proxy_enabled.isChecked()
-        use_system = self.system_proxy_check.isChecked()
-        
-        self.proxy_type.setEnabled(enabled and not use_system)
-        self.proxy_addr.setEnabled(enabled and not use_system)
-        self.proxy_port.setEnabled(enabled and not use_system)
-        self.proxy_username.setEnabled(enabled and not use_system)
-        self.proxy_password.setEnabled(enabled and not use_system)
-        
-        if use_system:
-            self.proxy_addr.setPlaceholderText("将使用系统代理设置")
-            self.proxy_port.setSpecialValueText("系统设置")
-        else:
-            self.proxy_addr.setPlaceholderText("例如: 127.0.0.1")
-            self.proxy_port.setSpecialValueText("")
     
     def create_log_tab(self):
         """创建日志页"""
@@ -1356,20 +1267,16 @@ class MainWindow(QMainWindow):
         self.config['api_hash'] = self.api_hash_edit.text().strip()
         self.config['phone'] = self.phone_edit.text().strip()
         
-        self.config['proxy']['enabled'] = self.proxy_enabled.isChecked()
-        self.config['proxy']['use_system_proxy'] = self.system_proxy_check.isChecked()
-        self.config['proxy']['type'] = self.proxy_type.currentText()
-        self.config['proxy']['addr'] = self.proxy_addr.text().strip()
-        self.config['proxy']['port'] = self.proxy_port.value()
-        self.config['proxy']['username'] = self.proxy_username.text().strip()
-        self.config['proxy']['password'] = self.proxy_password.text().strip()
-        
         Config.save(self.config)
         self.add_log("✅ 设置已保存")
         self.show_message("成功", "设置已保存", "info")
     
     def start_service(self):
         """启动服务"""
+        if self.is_service_running:
+            self.add_log("⚠ 服务已经在运行中")
+            return
+            
         if not all([self.config.get('api_id'), self.config.get('api_hash'), self.config.get('phone')]):
             self.show_message("警告", "请先在设置中配置 API ID, API Hash 和手机号", "warning")
             self.tabs.setCurrentIndex(2)
@@ -1382,12 +1289,14 @@ class MainWindow(QMainWindow):
         
         self.add_log("🔄 正在启动服务...")
         
+        self.is_service_running = True
         self.worker = TelegramWorker(self.config)
         self.worker.log_signal.connect(self.add_log)
         self.worker.status_signal.connect(self.update_status)
         self.worker.error_signal.connect(self.show_error)
         self.worker.auth_code_signal.connect(self.request_auth_code)
         self.worker.password_signal.connect(self.request_password)
+        self.worker.stopped_signal.connect(self.on_service_stopped)  # 连接停止完成信号
         self.worker.start()
         
         self.start_btn.setEnabled(False)
@@ -1395,12 +1304,29 @@ class MainWindow(QMainWindow):
     
     def stop_service(self):
         """停止服务"""
-        if self.worker:
-            self.add_log("🔄 正在停止服务...")
-            self.worker.stop()
-            self.worker.wait()
-            self.worker = None
+        if not self.is_service_running or not self.worker:
+            return
+            
+        self.add_log("🔄 正在停止服务...")
+        self.start_btn.setEnabled(False)
+        self.stop_btn.setEnabled(False)
         
+        # 设置停止标志并等待工作线程完成
+        if self.worker:
+            self.worker.stop()
+            # 等待工作线程完成，但不阻塞UI线程
+            QTimer.singleShot(100, self.check_worker_status)
+    
+    def check_worker_status(self):
+        """检查工作线程状态"""
+        if self.worker and self.worker.isRunning():
+            # 如果工作线程还在运行，继续检查
+            QTimer.singleShot(100, self.check_worker_status)
+    
+    def on_service_stopped(self):
+        """服务停止完成时的处理"""
+        self.is_service_running = False
+        self.worker = None
         self.update_status("已停止")
         self.start_btn.setEnabled(True)
         self.stop_btn.setEnabled(False)
@@ -1696,8 +1622,17 @@ class MainWindow(QMainWindow):
                     padding-left: 8px;
                 }}
                 
-                QGroupBox[objectName="accountGroup"],
-                QGroupBox[objectName="proxyGroup"] {{
+                QGroupBox[objectName="accountGroup"] {{
+                    background-color: #2D2D2D;
+                    border: 2px solid #3D3D3D;
+                    border-radius: 16px;
+                    margin-top: 12px;
+                    padding-top: 20px;
+                    font-weight: 600;
+                    font-size: 16px;
+                }}
+                
+                QGroupBox[objectName="infoGroup"] {{
                     background-color: #2D2D2D;
                     border: 2px solid #3D3D3D;
                     border-radius: 16px;
@@ -1714,10 +1649,7 @@ class MainWindow(QMainWindow):
                 
                 QLineEdit[objectName="apiIdEdit"],
                 QLineEdit[objectName="apiHashEdit"],
-                QLineEdit[objectName="phoneEdit"],
-                QLineEdit[objectName="proxyAddr"],
-                QLineEdit[objectName="proxyUsername"],
-                QLineEdit[objectName="proxyPassword"] {{
+                QLineEdit[objectName="phoneEdit"] {{
                     background-color: #3D3D3D;
                     border: 1px solid #4D4D4D;
                     border-radius: 10px;
@@ -1728,31 +1660,6 @@ class MainWindow(QMainWindow):
                 
                 QLineEdit:focus {{
                     border-color: #66B3FF;
-                }}
-                
-                QComboBox[objectName="proxyType"] {{
-                    background-color: #3D3D3D;
-                    border: 1px solid #4D4D4D;
-                    border-radius: 10px;
-                    padding: 12px 14px;
-                    color: #E0E0E0;
-                    font-size: 14px;
-                }}
-                
-                QSpinBox[objectName="proxyPort"] {{
-                    background-color: #3D3D3D;
-                    border: 1px solid #4D4D4D;
-                    border-radius: 10px;
-                    padding: 12px 14px;
-                    color: #E0E0E0;
-                    font-size: 14px;
-                }}
-                
-                QCheckBox[objectName="proxyEnabled"],
-                QCheckBox[objectName="systemProxyCheck"] {{
-                    color: #E0E0E0;
-                    font-size: 14px;
-                    padding: 4px 8px;
                 }}
                 
                 QPushButton[objectName="saveSettingsBtn"] {{
@@ -2070,8 +1977,17 @@ class MainWindow(QMainWindow):
                     padding-left: 8px;
                 }}
                 
-                QGroupBox[objectName="accountGroup"],
-                QGroupBox[objectName="proxyGroup"] {{
+                QGroupBox[objectName="accountGroup"] {{
+                    background-color: #FFFFFF;
+                    border: 2px solid #E0E0E0;
+                    border-radius: 16px;
+                    margin-top: 12px;
+                    padding-top: 20px;
+                    font-weight: 600;
+                    font-size: 16px;
+                }}
+                
+                QGroupBox[objectName="infoGroup"] {{
                     background-color: #FFFFFF;
                     border: 2px solid #E0E0E0;
                     border-radius: 16px;
@@ -2088,10 +2004,7 @@ class MainWindow(QMainWindow):
                 
                 QLineEdit[objectName="apiIdEdit"],
                 QLineEdit[objectName="apiHashEdit"],
-                QLineEdit[objectName="phoneEdit"],
-                QLineEdit[objectName="proxyAddr"],
-                QLineEdit[objectName="proxyUsername"],
-                QLineEdit[objectName="proxyPassword"] {{
+                QLineEdit[objectName="phoneEdit"] {{
                     background-color: #FFFFFF;
                     border: 1px solid #E0E0E0;
                     border-radius: 10px;
@@ -2102,31 +2015,6 @@ class MainWindow(QMainWindow):
                 
                 QLineEdit:focus {{
                     border-color: #66B3FF;
-                }}
-                
-                QComboBox[objectName="proxyType"] {{
-                    background-color: #FFFFFF;
-                    border: 1px solid #E0E0E0;
-                    border-radius: 10px;
-                    padding: 12px 14px;
-                    color: #333333;
-                    font-size: 14px;
-                }}
-                
-                QSpinBox[objectName="proxyPort"] {{
-                    background-color: #FFFFFF;
-                    border: 1px solid #E0E0E0;
-                    border-radius: 10px;
-                    padding: 12px 14px;
-                    color: #333333;
-                    font-size: 14px;
-                }}
-                
-                QCheckBox[objectName="proxyEnabled"],
-                QCheckBox[objectName="systemProxyCheck"] {{
-                    color: #333333;
-                    font-size: 14px;
-                    padding: 4px 8px;
                 }}
                 
                 QPushButton[objectName="saveSettingsBtn"] {{
@@ -2237,7 +2125,7 @@ class MainWindow(QMainWindow):
                     value_label.setStyleSheet("color: #3498db; font-size: 42px; font-weight: bold; padding: 4px 8px;")
                 elif "活跃规则" in title_text:
                     value_label.setStyleSheet("color: #2ecc71; font-size: 42px; font-weight: bold; padding: 4px 8px;")
-                elif "今日日志" in title_text:
+                elif "版本信息" in title_text:
                     value_label.setStyleSheet("color: #9b59b6; font-size: 42px; font-weight: bold; padding: 4px 8px;")
     
     def closeEvent(self, event):
@@ -2253,6 +2141,9 @@ class MainWindow(QMainWindow):
             
             if reply == QMessageBox.Yes:
                 self.stop_service()
+                # 等待工作线程完成
+                while self.worker and self.worker.isRunning():
+                    QApplication.processEvents()
                 event.accept()
             else:
                 event.ignore()
