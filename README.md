@@ -1,2 +1,2 @@
 # Telegram-Forwarder
-一个利用API在Telegram中转发消息的工具。
+一个利用用户API和BotAPI在Telegram中转发消息的工具，以及一个用于对资源进行编号管理的工具。
