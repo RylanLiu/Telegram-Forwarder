@@ -845,6 +845,9 @@ class MainWindow(QMainWindow):
         self.normal_resource_text = ""  # 保存正常状态下的资源文本框内容
         self.normal_prefix_text = ""  # 保存正常状态下的编号前缀
         
+        # 存储所有输入控件的引用，用于Enter键导航
+        self.all_input_widgets = []
+        
         # 设置程序图标
         self.setWindowIcon(QIcon("app.ico") if os.path.exists("app.ico") else QIcon())
         
@@ -1648,34 +1651,63 @@ class MainWindow(QMainWindow):
         pass
         
     # ========== Enter键导航 ==========
+    def collect_visible_input_widgets(self):
+        """收集所有可见的输入控件"""
+        widgets = []
+        
+        # 字段标签设置区域的文本框（始终可见）
+        widgets.append(self.actor_label_entry)
+        widgets.append(self.source_label_entry)
+        widgets.append(self.record_label_entry)
+        
+        # 前缀输入（始终可见）
+        widgets.append(self.prefix_entry)
+        
+        # 编号显示（只读，不参与Enter导航）
+        
+        # 主演相关 - 仅在可见时添加
+        if self.field_visibility.get("actor", True) and self.actor_entry.isVisible():
+            widgets.append(self.actor_entry)
+        
+        # 来源相关 - 仅在可见时添加
+        if self.field_visibility.get("source", True) and self.source_entry.isVisible():
+            widgets.append(self.source_entry)
+        
+        # 标签输入（始终可见）
+        for tag_entry in self.tag_entries:
+            widgets.append(tag_entry)
+        
+        # 记录相关 - 仅在可见时添加
+        if self.field_visibility.get("record", True) and self.record_entry.isVisible():
+            widgets.append(self.record_entry)
+        
+        # 资源输入（始终可见）
+        widgets.append(self.resource_entry)
+        
+        return widgets
+        
     def setup_enter_key_navigation(self):
-        """设置Enter键导航功能"""
-        # 字段标签设置区域的文本框（只有三个）
-        field_label_entries = [
-            self.actor_label_entry,
-            self.source_label_entry,
-            self.record_label_entry
-        ]
+        """设置Enter键导航功能 - 动态根据可见性决定跳转顺序"""
+        # 清除所有旧的连接
+        try:
+            for widget in self.all_input_widgets:
+                try:
+                    widget.returnPressed.disconnect()
+                except:
+                    pass
+        except:
+            pass
         
-        # 主要输入区域的文本框
-        main_entries = [
-            self.prefix_entry,
-            self.actor_entry,
-            self.source_entry,
-            *self.tag_entries,
-            self.record_entry,
-            self.resource_entry
-        ]
+        # 重新收集可见的输入控件
+        self.all_input_widgets = self.collect_visible_input_widgets()
         
-        # 所有文本框列表（除了简介）
-        all_entries = field_label_entries + main_entries
-        
-        # 为每个文本框设置Enter键跳转
-        for i, entry in enumerate(all_entries):
-            if i < len(all_entries) - 1:
-                next_entry = all_entries[i + 1]
+        # 为每个可见的文本框设置Enter键跳转到下一个可见的文本框
+        for i, entry in enumerate(self.all_input_widgets):
+            if i < len(self.all_input_widgets) - 1:
+                next_entry = self.all_input_widgets[i + 1]
                 entry.returnPressed.connect(lambda checked=False, ne=next_entry: ne.setFocus())
             else:
+                # 最后一个文本框，Enter键跳转到简介文本框
                 entry.returnPressed.connect(lambda: self.desc_entry.setFocus())
         
         # 简介文本框的特殊处理：Ctrl+Enter保存记录
@@ -2010,6 +2042,9 @@ class MainWindow(QMainWindow):
         # 启用预设切换
         self.preset_combo.setEnabled(True)
         
+        # 重新设置Enter键导航（因为可见性可能已改变）
+        self.setup_enter_key_navigation()
+        
         # 更新预览
         self.update_preview()
         
@@ -2127,6 +2162,9 @@ class MainWindow(QMainWindow):
             
         self.update_preview()  # 更新预览以反映可见性变化
         self.save_window_state()
+        
+        # 重新设置Enter键导航（因为可见性已改变）
+        self.setup_enter_key_navigation()
         
     # ========== 工具方法 ==========
     def show_toast_message(self, message, msg_type="info"):
