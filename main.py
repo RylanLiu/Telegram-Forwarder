@@ -19,7 +19,7 @@ from PyQt6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, QH
                              QComboBox, QSpinBox, QCheckBox, QListWidget, QListWidgetItem,
                              QInputDialog, QMenu)
 from PyQt6.QtCore import Qt, QTimer, pyqtSignal, QSize, QRect, QPropertyAnimation, QEasingCurve, QUrl, QPoint
-from PyQt6.QtGui import QFont, QPalette, QColor, QClipboard, QKeyEvent, QIcon, QPainter, QLinearGradient, QDesktopServices, QAction
+from PyQt6.QtGui import QFont, QPalette, QColor, QClipboard, QKeyEvent, QIcon, QPainter, QLinearGradient, QDesktopServices, QAction, QTextCursor
 
 # ========== 预设配置管理器 ==========
 class PresetManager:
@@ -240,6 +240,27 @@ class PresetDialog(QDialog):
                     self.delete_btn.setEnabled(False)
                     self.name_input.clear()
                     self.selected_preset = None
+
+
+# ========== 纯文本输入控件 ==========
+class PlainTextLineEdit(QLineEdit):
+    """支持粘贴为纯文本的QLineEdit"""
+    def __init__(self, parent=None):
+        super().__init__(parent)
+    
+    def insertFromMimeData(self, source):
+        """重载粘贴方法，强制使用纯文本"""
+        self.insertPlainText(source.text())
+
+
+class PlainTextEdit(QTextEdit):
+    """支持粘贴为纯文本的QTextEdit"""
+    def __init__(self, parent=None):
+        super().__init__(parent)
+    
+    def insertFromMimeData(self, source):
+        """重载粘贴方法，强制使用纯文本"""
+        self.insertPlainText(source.text())
 
 
 # ========== 数据管理器类（优化数据库结构）==========
@@ -1188,7 +1209,8 @@ class MainWindow(QMainWindow):
         actor_label.setFont(actor_label_font)
         actor_layout.addWidget(actor_label)
         
-        self.actor_label_entry = QLineEdit(self.field_labels["actor"])
+        self.actor_label_entry = PlainTextLineEdit()  # 改为纯文本输入框
+        self.actor_label_entry.setText(self.field_labels["actor"])
         self.actor_label_entry.setPlaceholderText("主演")
         self.actor_label_entry.setFixedWidth(68)  # 缩短15% (80 -> 68)
         self.actor_label_entry.setFont(actor_label_font)
@@ -1211,7 +1233,8 @@ class MainWindow(QMainWindow):
         source_label.setFont(source_label_font)
         source_layout.addWidget(source_label)
         
-        self.source_label_entry = QLineEdit(self.field_labels["source"])
+        self.source_label_entry = PlainTextLineEdit()  # 改为纯文本输入框
+        self.source_label_entry.setText(self.field_labels["source"])
         self.source_label_entry.setPlaceholderText("来源")
         self.source_label_entry.setFixedWidth(68)  # 缩短15% (80 -> 68)
         self.source_label_entry.setFont(source_label_font)
@@ -1234,7 +1257,8 @@ class MainWindow(QMainWindow):
         record_label.setFont(record_label_font)
         record_layout.addWidget(record_label)
         
-        self.record_label_entry = QLineEdit(self.field_labels["record"])
+        self.record_label_entry = PlainTextLineEdit()  # 改为纯文本输入框
+        self.record_label_entry.setText(self.field_labels["record"])
         self.record_label_entry.setPlaceholderText("记录")
         self.record_label_entry.setFixedWidth(68)  # 缩短15% (80 -> 68)
         self.record_label_entry.setFont(record_label_font)
@@ -1263,7 +1287,7 @@ class MainWindow(QMainWindow):
         label.setFixedWidth(50)  # 缩短15% (60 -> 50)
         row_layout.addWidget(label)
         
-        self.prefix_entry = QLineEdit()
+        self.prefix_entry = PlainTextLineEdit()  # 改为纯文本输入框
         self.prefix_entry.setObjectName("input_field")
         self.prefix_entry.setPlaceholderText("例如: AV")
         self.prefix_entry.textChanged.connect(self.refresh_code)
@@ -1280,7 +1304,7 @@ class MainWindow(QMainWindow):
         label.setFixedWidth(50)  # 缩短15% (60 -> 50)
         row_layout.addWidget(label)
         
-        self.code_entry = QLineEdit()
+        self.code_entry = QLineEdit()  # 编号只读，不粘贴内容，保持原样
         self.code_entry.setObjectName("readonly_field")
         self.code_entry.setReadOnly(True)
         row_layout.addWidget(self.code_entry, 1)
@@ -1296,7 +1320,7 @@ class MainWindow(QMainWindow):
         self.actor_label.setFixedWidth(50)  # 缩短15% (60 -> 50)
         row_layout.addWidget(self.actor_label)
         
-        self.actor_entry = QLineEdit()
+        self.actor_entry = PlainTextLineEdit()  # 改为纯文本输入框
         self.actor_entry.setObjectName("input_field")
         self.actor_entry.setPlaceholderText(f"输入{self.field_labels['actor']}")
         self.actor_entry.textChanged.connect(self.update_preview)
@@ -1313,7 +1337,7 @@ class MainWindow(QMainWindow):
         self.source_label.setFixedWidth(50)  # 缩短15% (60 -> 50)
         row_layout.addWidget(self.source_label)
         
-        self.source_entry = QLineEdit()
+        self.source_entry = PlainTextLineEdit()  # 改为纯文本输入框
         self.source_entry.setObjectName("input_field")
         self.source_entry.setPlaceholderText(f"输入{self.field_labels['source']}")
         self.source_entry.textChanged.connect(self.update_preview)
@@ -1339,7 +1363,7 @@ class MainWindow(QMainWindow):
         tag_layout.setSpacing(5)
         
         for i in range(5):
-            tag_entry = QLineEdit()
+            tag_entry = PlainTextLineEdit()  # 改为纯文本输入框
             tag_entry.setObjectName("input_field")
             tag_entry.setPlaceholderText(f"标签{i+1}")
             tag_entry.setMinimumWidth(60)  # 设置最小宽度，不设置固定宽度以实现自适应
@@ -1360,7 +1384,7 @@ class MainWindow(QMainWindow):
         self.record_label.setFixedWidth(50)  # 缩短15% (60 -> 50)
         row_layout.addWidget(self.record_label)
         
-        self.record_entry = QLineEdit()
+        self.record_entry = PlainTextLineEdit()  # 改为纯文本输入框
         self.record_entry.setObjectName("input_field")
         self.record_entry.setPlaceholderText(f"输入{self.field_labels['record']}")
         self.record_entry.textChanged.connect(self.update_preview)
@@ -1377,7 +1401,7 @@ class MainWindow(QMainWindow):
         self.resource_label.setFixedWidth(50)  # 缩短15% (60 -> 50)
         row_layout.addWidget(self.resource_label)
         
-        self.resource_entry = QLineEdit()
+        self.resource_entry = PlainTextLineEdit()  # 改为纯文本输入框
         self.resource_entry.setObjectName("input_field")
         self.resource_entry.setPlaceholderText(f"输入{self.field_labels['resource']}")
         self.resource_entry.textChanged.connect(self.update_preview)
@@ -1394,7 +1418,7 @@ class MainWindow(QMainWindow):
         label.setFixedWidth(50)  # 缩短15% (60 -> 50)
         row_layout.addWidget(label)
         
-        self.desc_entry = QTextEdit()
+        self.desc_entry = PlainTextEdit()  # 改为纯文本输入框
         self.desc_entry.setObjectName("desc_field")
         self.desc_entry.setMinimumHeight(120)
         self.desc_entry.textChanged.connect(self.update_preview)
